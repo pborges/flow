@@ -7,6 +7,7 @@ import (
 	"github.com/pborges/flow/flow"
 	"os"
 	"time"
+	"encoding/json"
 )
 
 func NewTimerNode(id string, duration time.Duration) *TimerNode {
@@ -153,12 +154,24 @@ func main() {
 		panic(err)
 	}
 
-	// if err := f.UnLinkNode("806af738-b8e4-4c0d-9a38-3a494816933b", "getState", "56ab82b7-7102-4bb0-a5f7-2c3c933f9f07", "setState"); err != nil {
-	// 	panic(err)
-	// }
+	 //if err := f.UnLinkNode("806af738-b8e4-4c0d-9a38-3a494816933b", "getState", "56ab82b7-7102-4bb0-a5f7-2c3c933f9f07", "setState"); err != nil {
+	 //	panic(err)
+	 //}
+
+	f.ErrorSink = &flow.Sink{
+		Name: "ERROR",
+		Fn: func(data interface{}) error {
+			e := json.NewEncoder(os.Stdout)
+			e.SetIndent("", "  ")
+			e.Encode(data)
+			e.Encode(data.(flow.Error).Err.Error())
+			return nil
+		},
+	}
 
 	f.Start()
 	bufio.NewReader(os.Stdin).ReadLine()
 	f.Stop()
 	bufio.NewReader(os.Stdin).ReadLine()
 }
+

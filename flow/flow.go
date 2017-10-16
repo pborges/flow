@@ -6,11 +6,24 @@ import (
 	"reflect"
 )
 
+type Error struct {
+	SourceNodeGuid string
+	SourceNodeType string
+	SinkNodeGuid   string
+	SinkNodeType   string
+	Err            error
+}
+
+func (e Error) Error() string {
+	return fmt.Sprintf("error %s(%s)-> %s(%s): %+v", e.SourceNodeGuid, e.SourceNodeType, e.SinkNodeGuid, e.SinkNodeType, e.Err)
+}
+
 type Flow struct {
 	sinkMap   map[string]map[string]*Sink
 	sourceMap map[string]map[string]*Source
 	nodeMap   map[string]Node
 	quitChan  chan struct{}
+	ErrorSink *Node
 }
 
 func NewFlow() *Flow {
@@ -40,10 +53,10 @@ type nodeLink struct {
 
 func (l nodeLink) String() string {
 	return fmt.Sprintf("%s(%s)->%s to %s(%s)->%s",
-		reflect.TypeOf(l.SourceNode).Name(),
+		getTypeName(l.SourceNode),
 		l.SourceNode.Id(),
 		l.Source.Name,
-		reflect.TypeOf(l.SinkNode).Name(),
+		getTypeName(l.SinkNode),
 		l.SinkNode.Id(),
 		l.Sink.Name)
 }
@@ -57,6 +70,7 @@ type Sink struct {
 type Source struct {
 	Name  string
 	links []nodeLink
+	flow  *Flow
 	//Type   string
 }
 
@@ -75,7 +89,7 @@ func linkNode(SinkNode Node, Sink *Sink, SourceNode Node, Source *Source) error 
 		Source:     Source,
 	}
 	Source.links = append(Source.links, ln)
-	fmt.Println(ln)
+	//fmt.Println(ln)
 	return nil
 }
 
@@ -87,51 +101,61 @@ func (o Source) Exec(d interface{}) {
 	for _, link := range o.links {
 		go func() {
 			if err := link.Sink.Fn(d); err != nil {
-				fmt.Println(link, "ERROR:", err)
+				//fmt.Println(link, "ERROR:", err)
+				if o.flow.ErrorSink != nil {
+					o.flow.ErrorSink.Fn(Error{
+						SourceNodeGuid: link.SourceNode.Id(),
+						SourceNodeType: getTypeName(link.SourceNode),
+						SinkNodeGuid:   link.SinkNode.Id(),
+						SinkNodeType:   getTypeName(link.SinkNode),
+						Err:            err,
+					})
+				}
 			}
 		}()
 	}
 }
 
-func (flow *Flow) RegisterNode(n Node) error {
-	fmt.Println("register", reflect.TypeOf(n).Name(), n.Id())
-	flow.nodeMap[n.Id()] = n
+func (f *Flow) RegisterNode(n Node) error {
+	fmt.Println("register", getTypeName(n), n.Id())
+	f.nodeMap[n.Id()] = n
 
 	for _, i := range n.Sinks() {
-		if _, ok := flow.sinkMap[n.Id()]; !ok {
-			flow.sinkMap[n.Id()] = make(map[string]*Sink)
+		if _, ok := f.sinkMap[n.Id()]; !ok {
+			f.sinkMap[n.Id()] = make(map[string]*Sink)
 		}
 		fmt.Println("\tSink " + i.Name)
-		flow.sinkMap[n.Id()][i.Name] = i
+		f.sinkMap[n.Id()][i.Name] = i
 	}
 	for _, o := range n.Sources() {
-		if _, ok := flow.sourceMap[n.Id()]; !ok {
+		if _, ok := f.sourceMap[n.Id()]; !ok {
 			//if o.Type == "" {
 			//	return errors.New("Source type for " + o.Name + " cannot be empty")
 			//}
-			flow.sourceMap[n.Id()] = make(map[string]*Source)
+			f.sourceMap[n.Id()] = make(map[string]*Source)
 		}
 		fmt.Println("\tSource " + o.Name)
-		flow.sourceMap[n.Id()][o.Name] = o
+		o.flow = f
+		f.sourceMap[n.Id()][o.Name] = o
 	}
 	return nil
 }
 
-func (flow *Flow) LinkNode(sourceGuid, sourceName, sinkGuid, sinkName string) error {
+func (f *Flow) LinkNode(sourceGuid, sourceName, sinkGuid, sinkName string) error {
 	var sourceNode, sinkNode Node
 	var source *Source
 	var sink *Sink
 	var ok bool
 
-	if sourceNode, ok = flow.nodeMap[sourceGuid]; ok {
-		if source, ok = flow.sourceMap[sourceGuid][sourceName]; !ok {
+	if sourceNode, ok = f.nodeMap[sourceGuid]; ok {
+		if source, ok = f.sourceMap[sourceGuid][sourceName]; !ok {
 			return errors.New("no source " + sourceName)
 		}
 	} else {
 		return errors.New("no source node " + sourceGuid)
 	}
-	if sinkNode, ok = flow.nodeMap[sinkGuid]; ok {
-		if sink, ok = flow.sinkMap[sinkGuid][sinkName]; !ok {
+	if sinkNode, ok = f.nodeMap[sinkGuid]; ok {
+		if sink, ok = f.sinkMap[sinkGuid][sinkName]; !ok {
 			return errors.New("no sink " + sinkName)
 		}
 	} else {
@@ -143,21 +167,21 @@ func (flow *Flow) LinkNode(sourceGuid, sourceName, sinkGuid, sinkName string) er
 	return linkNode(sinkNode, sink, sourceNode, source)
 }
 
-func (flow *Flow) UnLinkNode(sourceGuid, sourceName, sinkGuid, sinkName string) error {
+func (f *Flow) UnLinkNode(sourceGuid, sourceName, sinkGuid, sinkName string) error {
 	var sourceNode, sinkNode Node
 	var source *Source
 	var sink *Sink
 	var ok bool
 
-	if sourceNode, ok = flow.nodeMap[sourceGuid]; ok {
-		if source, ok = flow.sourceMap[sourceGuid][sourceName]; !ok {
+	if sourceNode, ok = f.nodeMap[sourceGuid]; ok {
+		if source, ok = f.sourceMap[sourceGuid][sourceName]; !ok {
 			return errors.New("no source " + sourceName)
 		}
 	} else {
 		return errors.New("no source node " + sourceGuid)
 	}
-	if sinkNode, ok = flow.nodeMap[sinkGuid]; ok {
-		if sink, ok = flow.sinkMap[sinkGuid][sinkName]; !ok {
+	if sinkNode, ok = f.nodeMap[sinkGuid]; ok {
+		if sink, ok = f.sinkMap[sinkGuid][sinkName]; !ok {
 			return errors.New("no sink " + sinkName)
 		}
 	} else {
@@ -167,15 +191,24 @@ func (flow *Flow) UnLinkNode(sourceGuid, sourceName, sinkGuid, sinkName string) 
 	return unlinkNode(sinkNode, sink, sourceNode, source)
 }
 
-func (flow *Flow) Start() {
-	flow.quitChan = make(chan struct{})
-	for _, n := range flow.nodeMap {
+func (f *Flow) Start() {
+	f.quitChan = make(chan struct{})
+	for _, n := range f.nodeMap {
 		if r, ok := n.(Runner); ok {
-			go r.Run(flow.quitChan)
+			go r.Run(f.quitChan)
 		}
 	}
 }
 
-func (flow *Flow) Stop() {
-	close(flow.quitChan)
+func (f *Flow) Stop() {
+	close(f.quitChan)
 }
+
+func getTypeName(i interface{}) string {
+	val := reflect.ValueOf(i)
+	if val.Kind() == reflect.Ptr {
+		return val.Elem().Type().Name()
+	}
+	return val.Type().Name()
+}
+
